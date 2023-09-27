@@ -4,6 +4,7 @@
 package bitmap
 
 import (
+	"math"
 	"math/bits"
 	"unsafe"
 
@@ -47,6 +48,31 @@ func (dst *Bitmap) Set(x uint32) {
 	(*dst)[blkAt] |= (1 << bitAt)
 }
 
+func (dst *Bitmap) SetRange(from, to uint32) {
+	if from > to {
+		return
+	}
+	blkAt, bitAt := location(from)
+	blkEndAt, bitEndAt := location(to)
+	if size := len(*dst); blkEndAt >= size {
+		dst.grow(blkEndAt)
+	}
+
+	negaAll := uint64(math.MaxUint64)
+	negaTo := uint64(negaAll >> (63 - bitEndAt))
+	negaFrom := uint64(negaAll << bitAt)
+	if blkAt == blkEndAt {
+		(*dst)[blkAt] = negaFrom & negaTo
+		return
+	}
+	(*dst)[blkAt] = negaFrom
+	for blkAt < blkEndAt {
+		(*dst)[blkAt] = negaAll
+		blkAt++
+	}
+	(*dst)[blkEndAt] = negaTo
+}
+
 // Remove removes the bit x from the bitmap, but does not shrink it.
 func (dst *Bitmap) Remove(x uint32) {
 	if blkAt := int(x >> 6); blkAt < len(*dst) {
@@ -64,6 +90,80 @@ func (dst Bitmap) Contains(x uint32) bool {
 
 	bitAt := int(x % 64)
 	return (dst[blkAt] & (1 << bitAt)) > 0
+}
+
+// ContainsAny checks whether a value in a range is contained in the bitmap or not.
+func (dst Bitmap) ContainsAnyInRange(from, to uint32) bool {
+	if from > to {
+		return false
+	}
+	blkAt, bitAt := location(from)
+	if size := len(dst); blkAt < size {
+		blkEndAt, bitEndAt := location(to)
+		negaAll := uint64(math.MaxUint64)
+		negaTo := uint64(negaAll >> (63 - bitEndAt))
+		negaFrom := uint64(negaAll << bitAt)
+		if blkAt == blkEndAt {
+			negaFrom = negaFrom & negaTo
+		}
+		if (dst[blkAt])&negaFrom > 0 {
+			return true
+		}
+		blkAt++
+		if blkEndAt >= size {
+			blkEndAt = size - 1
+		}
+		if blkAt > blkEndAt || blkAt >= size {
+			return false
+		}
+		for blkAt < blkEndAt {
+			if (dst[blkAt])&negaAll > 0 {
+				return true
+			}
+			blkAt++
+		}
+		if (dst[blkEndAt])&negaTo > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ContainsRange checks whether all values in a range is contained in the bitmap or not.
+func (dst Bitmap) ContainsAllInRange(from, to uint32) bool {
+	if from > to {
+		return false
+	}
+	blkAt, bitAt := location(from)
+	if size := len(dst); blkAt < size {
+		blkEndAt, bitEndAt := location(to)
+		negaAll := uint64(math.MaxUint64)
+		negaTo := uint64(negaAll >> (63 - bitEndAt))
+		negaFrom := uint64(negaAll << bitAt)
+		if blkAt == blkEndAt {
+			negaFrom = negaFrom & negaTo
+		}
+		if (dst[blkAt])&negaFrom != negaFrom {
+			return false
+		}
+		blkAt++
+		if blkEndAt >= size {
+			blkEndAt = size - 1
+		}
+		if blkAt > blkEndAt || blkAt >= size {
+			return true
+		}
+		for blkAt < blkEndAt {
+			if (dst[blkAt]) != negaAll {
+				return false
+			}
+			blkAt++
+		}
+		if (dst[blkEndAt])&negaTo == negaTo {
+			return true
+		}
+	}
+	return false
 }
 
 // Ones sets the entire bitmap to one.
@@ -247,3 +347,10 @@ func pointersOf(other Bitmap, extra []Bitmap) (unsafe.Pointer, int) {
 
 	return unsafe.Pointer(&out[0]), max
 }
+
+func location(x uint32) (int, int) {
+	blkAt := int(x >> 6)
+	bitAt := int(x & uint32(63))
+	return blkAt, bitAt
+}
+
